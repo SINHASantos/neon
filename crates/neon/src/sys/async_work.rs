@@ -58,26 +58,24 @@ pub unsafe fn schedule<I, O, D>(
     let work = &mut data.work as *mut _;
 
     // Create the `async_work`
-    assert_eq!(
-        napi::create_async_work(
-            env,
-            ptr::null_mut(),
-            super::string(env, "neon_async_work"),
-            Some(call_execute::<I, O, D>),
-            Some(call_complete::<I, O, D>),
-            Box::into_raw(data).cast(),
-            work,
-        ),
-        napi::Status::Ok,
-    );
+    napi::create_async_work(
+        env,
+        ptr::null_mut(),
+        super::string(env, "neon_async_work"),
+        Some(call_execute::<I, O, D>),
+        Some(call_complete::<I, O, D>),
+        Box::into_raw(data).cast(),
+        work,
+    )
+    .unwrap();
 
     // Queue the work
     match napi::queue_async_work(env, *work) {
-        napi::Status::Ok => {}
+        Ok(()) => {}
         status => {
             // If queueing failed, delete the work to prevent a leak
-            napi::delete_async_work(env, *work);
-            assert_eq!(status, napi::Status::Ok);
+            let _ = napi::delete_async_work(env, *work);
+            status.unwrap()
         }
     }
 }
@@ -152,7 +150,7 @@ unsafe extern "C" fn call_complete<I, O, D>(env: Env, status: napi::Status, data
         ..
     } = *Box::<Data<I, O, D>>::from_raw(data.cast());
 
-    napi::delete_async_work(env, work);
+    debug_assert_eq!(napi::delete_async_work(env, work), Ok(()));
 
     BOUNDARY.catch_failure(env, None, move |env| {
         // `unwrap` is okay because `call_complete` should be called exactly once

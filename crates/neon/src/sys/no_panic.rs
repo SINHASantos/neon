@@ -133,7 +133,7 @@ impl FailureBoundary {
 // we already know `env` is non-null, we expect the `null` value to cause a `napi_invalid_arg` error.
 // https://github.com/nodejs/node/blob/5fad0b93667ffc6e4def52996b9529ac99b26319/src/js_native_api_v8.cc#L1925-L1926
 fn can_call_into_js(env: Env) -> bool {
-    !env.is_null() && unsafe { napi::throw(env, ptr::null_mut()) == napi::Status::InvalidArg }
+    !env.is_null() && unsafe { napi::throw(env, ptr::null_mut()) == Err(napi::Status::InvalidArg) }
 }
 
 // We cannot use `napi_fatal_exception` because of this bug; instead, cause an
@@ -144,11 +144,11 @@ unsafe fn fatal_exception(env: Env, error: Local) {
     let mut promise = MaybeUninit::uninit();
 
     let deferred = match napi::create_promise(env, deferred.as_mut_ptr(), promise.as_mut_ptr()) {
-        napi::Status::Ok => deferred.assume_init(),
+        Ok(()) => deferred.assume_init(),
         _ => fatal_error("Failed to create a promise"),
     };
 
-    if napi::reject_deferred(env, deferred, error) != napi::Status::Ok {
+    if napi::reject_deferred(env, deferred, error) != Ok(()) {
         fatal_error("Failed to reject a promise");
     }
 }
@@ -178,14 +178,14 @@ unsafe fn create_error(
 
 #[track_caller]
 unsafe fn resolve_deferred(env: Env, deferred: napi::Deferred, value: Local) {
-    if napi::resolve_deferred(env, deferred, value) != napi::Status::Ok {
+    if napi::resolve_deferred(env, deferred, value) != Ok(()) {
         fatal_error("Failed to resolve promise");
     }
 }
 
 #[track_caller]
 unsafe fn reject_deferred(env: Env, deferred: napi::Deferred, value: Local) {
-    if napi::reject_deferred(env, deferred, value) != napi::Status::Ok {
+    if napi::reject_deferred(env, deferred, value) != Ok(()) {
         fatal_error("Failed to reject promise");
     }
 }
@@ -198,7 +198,7 @@ unsafe fn catch_exception(env: Env) -> Option<Local> {
 
     let mut error = MaybeUninit::uninit();
 
-    if napi::get_and_clear_last_exception(env, error.as_mut_ptr()) != napi::Status::Ok {
+    if napi::get_and_clear_last_exception(env, error.as_mut_ptr()) != Ok(()) {
         fatal_error("Failed to get and clear the last exception");
     }
 
@@ -212,10 +212,9 @@ unsafe fn error_from_message(env: Env, msg: &str) -> Local {
 
     let status = napi::create_error(env, ptr::null_mut(), msg, err.as_mut_ptr());
 
-    if status == napi::Status::Ok {
-        err.assume_init()
-    } else {
-        fatal_error("Failed to create an Error");
+    match status {
+        Ok(()) => err.assume_init(),
+        Err(_) => fatal_error("Failed to create an Error"),
     }
 }
 
@@ -236,7 +235,7 @@ unsafe fn error_from_panic(env: Env, panic: Panic) -> Local {
 unsafe fn set_property(env: Env, object: Local, key: &str, value: Local) {
     let key = create_string(env, key);
 
-    if napi::set_property(env, object, key, value) != napi::Status::Ok {
+    if napi::set_property(env, object, key, value).is_err() {
         fatal_error("Failed to set an object property");
     }
 }
@@ -255,22 +254,23 @@ unsafe fn panic_msg(panic: &Panic) -> Option<&str> {
 unsafe fn external_from_panic(env: Env, panic: Panic) -> Local {
     let fail = || fatal_error("Failed to create a neon::types::JsBox from a panic");
     let mut result = MaybeUninit::uninit();
-    let status = napi::create_external(
+
+    if napi::create_external(
         env,
         Box::into_raw(Box::new(DebugSendWrapper::new(panic))).cast(),
         Some(finalize_panic),
         ptr::null_mut(),
         result.as_mut_ptr(),
-    );
-
-    if status != napi::Status::Ok {
+    )
+    .is_err()
+    {
         fail();
     }
 
     let external = result.assume_init();
 
     #[cfg(feature = "napi-8")]
-    if napi::type_tag_object(env, external, &*crate::MODULE_TAG) != napi::Status::Ok {
+    if napi::type_tag_object(env, external, &*crate::MODULE_TAG).is_err() {
         fail();
     }
 
@@ -286,9 +286,8 @@ extern "C" fn finalize_panic(_env: Env, data: *mut c_void, _hint: *mut c_void) {
 #[track_caller]
 unsafe fn create_string(env: Env, msg: &str) -> Local {
     let mut string = MaybeUninit::uninit();
-    let status = napi::create_string_utf8(env, msg.as_ptr().cast(), msg.len(), string.as_mut_ptr());
 
-    if status != napi::Status::Ok {
+    if napi::create_string_utf8(env, msg.as_ptr().cast(), msg.len(), string.as_mut_ptr()).is_err() {
         fatal_error("Failed to create a String");
     }
 
@@ -298,7 +297,7 @@ unsafe fn create_string(env: Env, msg: &str) -> Local {
 unsafe fn is_exception_pending(env: Env) -> bool {
     let mut throwing = false;
 
-    if napi::is_exception_pending(env, &mut throwing) != napi::Status::Ok {
+    if napi::is_exception_pending(env, &mut throwing).is_err() {
         fatal_error("Failed to check if an exception is pending");
     }
 
